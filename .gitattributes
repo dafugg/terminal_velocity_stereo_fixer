@@ -1,0 +1,4 @@
+# DOS files: keep CRLF line endings exactly as committed
+*.BAT -text
+*.SCR -text
+*.TXT -text
