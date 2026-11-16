@@ -1,10 +1,11 @@
 @ECHO OFF
-REM TVSTEREO.BAT - Terminal Velocity 1.2 stereo fix for Sound Blaster 16.
+REM TVSTEREO.BAT - Terminal Velocity stereo fix for Sound Blaster 16.
+REM Supports the full game v1.1 and v1.2 and shareware v1.1 and v1.2.
 REM Run in the game directory:  TVSTEREO       apply the fix
 REM                             TVSTEREO UNDO  restore GAME.ORG
 REM DEBUG assembles a small patcher (TVFIX.COM) from TVSTEREO.SCR. It
-REM checks GAME.EXE's CRC32 (original = E995B3E9), changes 4 bytes,
-REM then checks the result (patched = 1B58E5F5). See README.TXT.
+REM checks GAME.EXE's CRC32 against the known versions, changes 4
+REM bytes, then checks the CRC32 of the result. See README.TXT.
 
 IF "%1"=="UNDO" GOTO UNDO
 IF "%1"=="undo" GOTO UNDO
@@ -15,14 +16,34 @@ IF EXIST TVFIX.COM DEL TVFIX.COM
 DEBUG < TVSTEREO.SCR > NUL
 IF NOT EXIST TVFIX.COM GOTO NODEBUG
 
-REM Check only. 0=original 1=can't open 2=unknown 3=patched 4=read error
+REM Check only. 1=can't open 2=unknown 3=patched 4=read error
+REM 5..8 = original found: full 1.2, full 1.1, shareware 1.2, 1.1
 ECHO Checking GAME.EXE...
 TVFIX
+IF ERRORLEVEL 9 GOTO UNKNOWN
+IF ERRORLEVEL 8 GOTO SW11
+IF ERRORLEVEL 7 GOTO SW12
+IF ERRORLEVEL 6 GOTO FULL11
+IF ERRORLEVEL 5 GOTO FULL12
 IF ERRORLEVEL 4 GOTO READERR
 IF ERRORLEVEL 3 GOTO ALREADY
 IF ERRORLEVEL 2 GOTO UNKNOWN
 IF ERRORLEVEL 1 GOTO NOOPEN
+GOTO UNKNOWN
 
+:FULL12
+ECHO Found Terminal Velocity 1.2 (full version).
+GOTO BACKUP
+:FULL11
+ECHO Found Terminal Velocity 1.1 (full version).
+GOTO BACKUP
+:SW12
+ECHO Found Terminal Velocity 1.2 (shareware).
+GOTO BACKUP
+:SW11
+ECHO Found Terminal Velocity 1.1 (shareware).
+
+:BACKUP
 IF EXIST GAME.ORG GOTO PATCH
 ECHO Backing up GAME.EXE to GAME.ORG...
 COPY GAME.EXE GAME.ORG > NUL
@@ -49,7 +70,8 @@ GOTO END
 
 :UNKNOWN
 DEL TVFIX.COM
-ECHO GAME.EXE is not Terminal Velocity 1.2 (CRC32 E995B3E9). Not changed.
+ECHO GAME.EXE is not a known Terminal Velocity version. Not changed.
+ECHO Supported: full v1.1 and v1.2, shareware v1.1 and v1.2.
 GOTO END
 
 :NOOPEN

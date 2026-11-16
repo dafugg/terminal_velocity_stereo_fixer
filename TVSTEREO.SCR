@@ -1,207 +1,239 @@
-; TVSTEREO.SCR - DEBUG script for the Terminal Velocity 1.2 stereo fix.
+; TVSTEREO.SCR - DEBUG script for the Terminal Velocity stereo fix.
 ; Used by TVSTEREO.BAT as:  DEBUG < TVSTEREO.SCR > NUL
 ;
-; DEBUG has no comment syntax: it answers each ";" line with "^ Error"
-; and ignores it. That is harmless. Comments are kept outside the "a"
-; (assemble) blocks so no code line is ever affected.
+; DEBUG has no comment syntax: it answers each ";" line with an error
+; message and ignores it. That is harmless. Comments are kept outside
+; the "a" (assemble) blocks so no code line is ever affected.
 ;
 ; This script assembles a tiny program, TVFIX.COM, then quits.
 ;   TVFIX     checks GAME.EXE only, changes nothing
-;   TVFIX P   checks GAME.EXE; patches it ONLY if its CRC32 is the
-;             original's, then re-checks the CRC32 of the result
-; Exit codes: 0 = OK (original found, or patched and verified)
+;   TVFIX P   checks GAME.EXE; patches it ONLY if its CRC32 is one of
+;             the known originals, then re-checks the CRC32 of the result
+; Exit codes: 0 = patched and verified
 ;             1 = cannot open GAME.EXE   2 = wrong CRC32 (unknown file)
 ;             3 = already patched        4 = read/write/verify error
-; CRC32 of the whole GAME.EXE (624,695 bytes):
-;   original E995B3E9, patched 1B58E5F5.
+;             5..8 = original found (check only), version as below
+;
+; Known versions, by CRC32 of the whole GAME.EXE:
+;   code  version          size     original  patched   offset shift
+;    5    full 1.2       624,695    E995B3E9  1B58E5F5    0
+;    6    full 1.1       620,599    26794CEB  382746ED    0
+;    7    shareware 1.2  620,459    DEB1ECFE  9EEBD204   20
+;    8    shareware 1.1  620,459    A433F94B  E469C7B1   20
 ;
 ; All numbers are hex. Each block starts at a fixed address ("a xxx")
 ; so jump targets never depend on instruction sizes. All conditional
 ; jumps stay within 127 bytes, as the 8086 requires.
 ;
 ; Fill the program area with NOPs (90) so blocks can run into the next.
-f 100 26f 90
+f 100 2af 90
 ;
 ; === 100 MAIN ===
-; Open GAME.EXE (name at 260) read/write; if that fails exit 1.
+; Open GAME.EXE (name at 2A0) read/write; if that fails exit 1.
 ; Keep the handle in BX. CRC32 the whole file into DI:SI (high:low);
-; read error: exit 4. Not E995B3E9: go to NOTORIG. Else go to ORIG.
+; read error: exit 4. Then search the version table (BP, 4 entries).
 a 100
-mov dx,260
+mov dx,2a0
 mov ax,3d02
 int 21
-jb 140
+jb 158
 mov bx,ax
-call 1c0
-jb 138
-cmp di,e995
-jnz 158
-cmp si,b3e9
-jnz 158
-jmp 168
+call 1d0
+jb 150
+mov bp,240
+mov cx,4
 
-;
-; === 120..140 EXITS === put the exit code in DL, then go to CLOSE.
-a 120
-mov dl,0
-jmp 148
+; === 118 VLOOP === original CRC32 of this entry? Go to FOUND.
+a 118
+cmp di,[bp+0]
+jnz 124
+cmp si,[bp+2]
+jz 178
 
-a 128
-mov dl,2
-jmp 148
+; 124: patched CRC32 of this entry? Exit 3 (already patched).
+a 124
+cmp di,[bp+4]
+jnz 130
+cmp si,[bp+6]
+jz 148
 
+; 130: next entry (12 bytes on). No match at all: exit 2.
 a 130
-mov dl,3
-jmp 148
+add bp,0c
+loop 118
+jmp 140
 
+; === 138..158 EXITS === put the exit code in DL, then go to CLOSE.
 a 138
-mov dl,4
-jmp 148
+mov dl,0
+jmp 160
 
-; 140: open failed, so there is no handle to close. Exit 1.
 a 140
+mov dl,2
+jmp 160
+
+a 148
+mov dl,3
+jmp 160
+
+a 150
+mov dl,4
+jmp 160
+
+; 158: open failed, so there is no handle to close. Exit 1.
+a 158
 mov ax,4c01
 int 21
 
-; === 148 CLOSE === close the file (BX), exit with code DL.
-a 148
+; === 160 CLOSE === close the file (BX), exit with code DL.
+a 160
 mov ah,3e
 int 21
 mov al,dl
 mov ah,4c
 int 21
 
-; === 158 NOTORIG === CRC32 is not the original's.
-; 1B58E5F5 means already patched: exit 3. Anything else: exit 2.
-a 158
-cmp di,1b58
-jnz 128
-cmp si,e5f5
-jnz 128
-jmp 130
+; === 170 CHECKED === check only: exit with this version's code (5..8).
+a 170
+mov dl,[bp+0a]
+jmp 160
 
-; === 168 ORIG === the file is the original. Patch only for "TVFIX P":
-; PSP:80 is the command tail length, PSP:82 its first character after
-; the space. Upper-case it (AND DF) and compare with "P" (50); if not,
-; exit 0 having changed nothing. Else SI = patch table, BP = 4 entries.
-a 168
+; === 178 FOUND === BP = matching version entry. Patch only for
+; "TVFIX P": PSP:80 is the command tail length, PSP:82 its first
+; character after the space. Upper-case it (AND DF), compare with "P"
+; (50). If not, go to CHECKED. Else SI = patch table, DI = 4 entries.
+a 178
 cmp byte ptr [80],2
-jb 120
+jb 170
 mov al,[82]
 and al,df
 cmp al,50
-jnz 120
-mov si,230
-mov bp,4
+jnz 170
+mov si,270
+mov di,4
 
-; === 180 WRITE === for each table entry: seek (CX:DX = offset),
-; write the new bytes (count at [SI+4], bytes at SI+6), check that all
-; were written, next entry (9 bytes on). Any error: exit 4.
-; Then CRC32 the file again: must be 1B58E5F5 or exit 4. Else exit 0.
-a 180
+; === 190 WRITE === for each patch table entry: seek to the offset
+; (CX:DX) plus this version's shift ([BP+8]), write the new bytes
+; (count at [SI+4], bytes at SI+6), check all were written, next entry
+; (9 bytes on). Any error: exit 4. Then CRC32 the file again: it must
+; be this version's patched CRC32 ([BP+4]:[BP+6]) or exit 4. Else exit 0.
+a 190
 mov ax,4200
 mov cx,[si]
 mov dx,[si+2]
+add dx,[bp+8]
 int 21
-jb 138
+jb 150
 mov ah,40
 mov cx,[si+4]
 lea dx,[si+6]
 int 21
-jb 138
+jb 150
 cmp ax,cx
-jnz 138
+jnz 150
 add si,9
-dec bp
-jnz 180
-call 1c0
-jb 138
-cmp di,1b58
-jnz 138
-cmp si,e5f5
-jnz 138
-jmp 120
+dec di
+jnz 190
+call 1d0
+jb 150
+cmp di,[bp+4]
+jnz 150
+cmp si,[bp+6]
+jnz 150
+jmp 138
 
-; === 1C0 CRC32 subroutine === standard CRC32 (polynomial EDB88320)
+; === 1D0 CRC32 subroutine === standard CRC32 (polynomial EDB88320)
 ; of the whole file, in 8086 code. Rewind to the start; CRC = FFFFFFFF.
-; Returns the CRC in DI:SI, or carry set on a read error.
-a 1c0
+; Returns the CRC in DI:SI, or carry set on a read error. Keeps BP.
+a 1d0
 mov ax,4200
 xor cx,cx
 xor dx,dx
 int 21
-jb 220
+jb 230
 mov si,ffff
 mov di,ffff
 
-; 1D8: read up to 8000 bytes into the buffer at 1000. 0 bytes = end of
+; 1E8: read up to 8000 bytes into the buffer at 1000. 0 bytes = end of
 ; file. CX = bytes to do, BX = buffer pointer (the handle is saved).
-a 1d8
+a 1e8
 mov ah,3f
 mov cx,8000
 mov dx,1000
 int 21
-jb 220
+jb 230
 or ax,ax
-jz 218
+jz 228
 mov cx,ax
 push bx
 mov bx,1000
 
-; 1F0: XOR the next byte into the low byte of the CRC. DL = 8 bits.
-a 1f0
+; 200: XOR the next byte into the low byte of the CRC. DL = 8 bits.
+a 200
 mov al,[bx]
 xor ah,ah
 xor si,ax
 mov dl,8
 
-; 1F8: shift the CRC right 1 bit; if a 1 fell out, XOR in EDB88320.
-a 1f8
+; 208: shift the CRC right 1 bit; if a 1 fell out, XOR in EDB88320.
+a 208
 shr di,1
 rcr si,1
-jnb 208
+jnb 218
 xor di,edb8
 xor si,8320
 
-; 208: next bit, next byte, next buffer.
-a 208
-dec dl
-jnz 1f8
-inc bx
-loop 1f0
-pop bx
-jmp 1d8
-
-; 218: end of file. Final CRC = NOT CRC. Return with carry clear.
+; 218: next bit, next byte, next buffer.
 a 218
+dec dl
+jnz 208
+inc bx
+loop 200
+pop bx
+jmp 1e8
+
+; 228: end of file. Final CRC = NOT CRC. Return with carry clear.
+a 228
 not si
 not di
 clc
 ret
 
-; 220: read error. Return with carry set.
-a 220
+; 230: read error. Return with carry set.
+a 230
 ret
 
-; === 230 PATCH TABLE === each entry: offset high word, low word,
-; byte count, new bytes (3, unused ones 00). File offsets:
+; === 240 VERSION TABLE === each entry (12 bytes): original CRC32 high
+; word, low word; patched CRC32 high, low; offset shift; exit code.
+; full 1.2:      E995B3E9 -> 1B58E5F5, shift 0, code 5
+e 240 95 e9 e9 b3 58 1b f5 e5 00 00 05 00
+; full 1.1:      26794CEB -> 382746ED, shift 0, code 6
+e 24c 79 26 eb 4c 27 38 ed 46 00 00 06 00
+; shareware 1.2: DEB1ECFE -> 9EEBD204, shift 20, code 7
+e 258 b1 de fe ec eb 9e 04 d2 20 00 07 00
+; shareware 1.1: A433F94B -> E469C7B1, shift 20, code 8
+e 264 33 a4 4b f9 69 e4 b1 c7 20 00 08 00
+;
+; === 270 PATCH TABLE === each entry (9 bytes): offset high word, low
+; word, byte count, new bytes (3, unused ones 00). Offsets are for the
+; full versions; the shareware ones are 20 bytes later.
 ; 054864: 88 5D FF -> 88 5D FE  stereo mixer, store BL at [EBP-2]
 ; 05486B: 88 4D FE -> 88 4D FF  stereo mixer, store CL at [EBP-1]
 ; 054E8D: 88 18    -> 88 08     surround mixer, store CL at [EAX]
 ; 054E92: 88 48 01 -> 88 58 01  surround mixer, store BL at [EAX+1]
-e 230 05 00 64 48 03 00 88 5d fe
-e 239 05 00 6b 48 03 00 88 4d ff
-e 242 05 00 8d 4e 02 00 88 08 00
-e 24b 05 00 92 4e 03 00 88 58 01
+e 270 05 00 64 48 03 00 88 5d fe
+e 279 05 00 6b 48 03 00 88 4d ff
+e 282 05 00 8d 4e 02 00 88 08 00
+e 28b 05 00 92 4e 03 00 88 58 01
 ;
-; === 260 FILE NAME === zero terminated.
-e 260 "GAME.EXE" 0
+; === 2A0 FILE NAME === zero terminated.
+e 2a0 "GAME.EXE" 0
 ;
-; Save 170 bytes (100..26F) as TVFIX.COM, then quit DEBUG.
+; Save 1B0 bytes (100..2AF) as TVFIX.COM, then quit DEBUG.
 n tvfix.com
 rbx
 0
 rcx
-170
+1b0
 w
 q
